@@ -1,4 +1,4 @@
-# Game Template: design
+# Checkers: design
 
 ## The game
 What it is, in two sentences. Rules summary, and anything that differs from the classic version.

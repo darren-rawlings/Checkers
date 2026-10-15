@@ -1,7 +1,7 @@
-using GameTemplate.Core;
+using Checkers.Core;
 using Xunit;
 
-namespace GameTemplate.Tests;
+namespace Checkers.Tests;
 
 public class ScoreboardTests
 {
