@@ -33,6 +33,7 @@ public partial class Main : Node3D
 	private readonly Scoreboard _wins = new();
 	private readonly Checker?[] _pieces = new Checker?[64];
 	private readonly MeshInstance3D[] _hints = new MeshInstance3D[64];
+	private readonly MeshInstance3D[] _movable = new MeshInstance3D[64];
 	private readonly List<RigidBody3D> _knockedOut = new();
 	private readonly ImpactBank<Style> _impacts = new(Styles.Impact);
 	private readonly ComputerTurn _computer = new();
@@ -157,10 +158,14 @@ public partial class Main : Node3D
 
 		var glow = new StandardMaterial3D { ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded, AlbedoColor = new Color(1f, 0.78f, 0.35f, 0.6f), Transparency = BaseMaterial3D.TransparencyEnum.Alpha };
 		var dot = new CylinderMesh { TopRadius = 0.15f, BottomRadius = 0.15f, Height = 0.01f, RadialSegments = 24 };
+		// Rings round the pieces that can move (a dot would hide under the piece).
+		var moveRing = new TorusMesh { InnerRadius = PieceRadius + 0.01f, OuterRadius = PieceRadius + 0.06f, Rings = 40, RingSegments = 8 };
 		for (int square = 0; square < 64; square++)
 		{
 			_hints[square] = new MeshInstance3D { Mesh = dot, MaterialOverride = glow, Position = SquareCenter(square) + new Vector3(0, 0.006f, 0), Visible = false, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
 			_rig.AddChild(_hints[square]);
+			_movable[square] = new MeshInstance3D { Mesh = moveRing, MaterialOverride = glow, Position = SquareCenter(square) + new Vector3(0, 0.01f, 0), Scale = new Vector3(1, 0.3f, 1), Visible = false, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
+			_rig.AddChild(_movable[square]);
 		}
 		_selectRing = new MeshInstance3D
 		{
@@ -468,6 +473,8 @@ public partial class Main : Node3D
 	{
 		foreach (var hint in _hints)
 			hint.Visible = false;
+		foreach (var ring in _movable)
+			ring.Visible = false;
 		_selectRing.Visible = false;
 		if (_busy || IsComputerTurn || _game.IsOver)
 			return;
@@ -482,7 +489,7 @@ public partial class Main : Node3D
 		else
 		{
 			foreach (int from in moves.Select(m => m.From).Distinct())
-				_hints[from].Visible = true;
+				_movable[from].Visible = true;
 		}
 	}
 
