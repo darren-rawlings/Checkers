@@ -54,6 +54,7 @@ public partial class Main : Node3D
 
 	private bool _demo;
 	private bool _quitAfterDemo;
+	private string? _clip;
 	private float _initialSpin;
 
 	private bool VsComputer => _settings.Mode == GameMode.PlayerVsComputer || _demo;
@@ -86,16 +87,11 @@ public partial class Main : Node3D
 		_hud = new GameHud(theme);
 		AddChild(_hud);
 		_hud.Build(new HudOptions(Title, "Tap a piece, then where to go  ·  Drag to spin",
-			PieceName: s => $"{Styles.Pieces(s).NameOne} & {Styles.Pieces(s).NameTwo}"),
-			_settings.Muted, _settings.Mode, _settings.Difficulty, _settings.Board, _settings.Pieces);
+			PieceName: s => $"{Styles.Pieces(s).NameOne} & {Styles.Pieces(s).NameTwo}"), _settings);
 		_hud.NewGamePressed += OnNewGamePressed;
 		_hud.UndoPressed += OnUndoPressed;
-		_hud.MuteToggled += muted =>
-		{
-			_settings.Muted = muted;
-			AudioServer.SetBusMute(0, muted);
-			_settings.Save();
-		};
+		_hud.RestartPressed += OnRestartPressed;
+		_hud.SetTutorial(Tutorial.Pages);
 		_hud.ModeChosen += (mode, difficulty) =>
 		{
 			_settings.Mode = mode;
@@ -118,9 +114,18 @@ public partial class Main : Node3D
 				piece?.ApplyStyle(PieceColours);
 		};
 
-		_spin = new SpinControl(_rig, () => !_busy);
+		_spin = new SpinControl(_rig, () => !_busy && !_settings.FreezeBoard);
 		_spin.Tapped += OnTapped;
+		if (_clip != null)
+		{
+			_hud.Visible = false;
+			_ = PlayClip(_clip);
+			return;
+		}
 		_ = StartGame();
+		if (!_demo)
+			_hud.OfferTutorialOnce(_settings);
+		_hud.ApplyDevFlags();
 	}
 
 	// ---------------------------------------------------------------- World
@@ -271,10 +276,60 @@ public partial class Main : Node3D
 		{
 			_roundCounted = true;
 			if (_game.Winner is { } winner)
+			{
 				_wins.Win(first: winner == Colour.Dark);
+				await SetWinnerAlight(winner, move.To);
+			}
 		}
 		_busy = false;
 		RefreshUi();
+	}
+
+	// ---------------------------------------------------------------- The winner's fire
+
+	private readonly List<Flames> _fires = new();
+
+	/// <summary>The winner's surviving pieces catch fire one after another, from the last one to move.</summary>
+	private async Task SetWinnerAlight(Colour winner, int from)
+	{
+		var origin = SquareCenter(from);
+		var survivors = Enumerable.Range(0, 64).Where(s => _game[s]?.Colour == winner && _pieces[s] != null)
+			.OrderBy(s => (SquareCenter(s) - origin).Length()).ToList();
+		for (int i = 0; i < survivors.Count; i++)
+		{
+			var checker = _pieces[survivors[i]]!;
+			_fires.Add(Flames.SetAlight(_rig, checker.Position + new Vector3(0, PieceHeight * (checker.King ? 2 : 1), 0), checker.Meshes, radius: 0.28f, size: 0.85f, withLight: i == 0, particles: i < 12));
+			await Wait(0.12f);
+		}
+		await Wait(0.4f);
+	}
+
+	private void PutOutFire()
+	{
+		foreach (var fire in _fires)
+			fire.Extinguish();
+		_fires.Clear();
+	}
+
+	/// <summary>
+	/// Start over: free once the game is over or before anyone has moved; otherwise against the
+	/// computer it's a resignation (the computer gets the win) unless the player watches an ad.
+	/// </summary>
+	private void OnRestartPressed()
+	{
+		if (_busy)
+			return;
+		if (_game.IsOver || _game.MovesMade == 0)
+		{
+			_ = StartGame();
+			return;
+		}
+		_hud.AskRestart(VsComputer && !_demo, countLoss =>
+		{
+			if (countLoss)
+				_wins.Win(first: Human != Colour.Dark);
+			_ = StartGame();
+		}, then => _ads.ShowRewarded(rewarded: then, closed: () => { }));
 	}
 
 	/// <summary>
@@ -321,6 +376,23 @@ public partial class Main : Node3D
 		Sparkle.Burst(this, transform.Origin + new Vector3(0, 0.2f, 0));
 		_knockedOut.Add(body);
 		PlayClack(transform.Origin, 1f);
+
+		// Once it has landed and stopped, it fades away, so the table doesn't fill up with pieces.
+		var fade = CreateTween();
+		fade.TweenInterval(2.2f);
+		fade.TweenMethod(Callable.From<float>(a =>
+		{
+			if (!IsInstanceValid(victim))
+				return;
+			foreach (var mesh in victim.Meshes)
+				mesh.Transparency = a;
+		}), 0f, 1f, 0.9f);
+		fade.TweenCallback(Callable.From(() =>
+		{
+			_knockedOut.Remove(body);
+			if (IsInstanceValid(body))
+				body.QueueFree();
+		}));
 	}
 
 	/// <summary>A second disc drops onto the piece from above, with sparks: crowned.</summary>
@@ -397,6 +469,7 @@ public partial class Main : Node3D
 	private async Task StartGame()
 	{
 		_computer.Cancel();
+		PutOutFire();
 		_busy = true;
 		_roundCounted = false;
 		_game.Reset();
@@ -442,6 +515,7 @@ public partial class Main : Node3D
 
 	private async Task UndoLastTurn()
 	{
+		PutOutFire();
 		_computer.Cancel();
 		if (_game.IsOver && _roundCounted && _game.Winner is { } winner)
 			_wins.Unwin(first: winner == Colour.Dark);
@@ -498,6 +572,7 @@ public partial class Main : Node3D
 		_hud.SetScore($"{NameOf(Colour.Dark)}  {_game.Count(Colour.Dark)}   —   {_game.Count(Colour.Light)}  {NameOf(Colour.Light)}");
 		_hud.SetNewGameVisible(_game.IsOver && !_busy);
 		_hud.SetUndoVisible(CanUndo);
+		_hud.SetRestartVisible(!_game.IsOver);
 		RefreshHints();
 
 		if (_game.IsOver)
@@ -526,6 +601,72 @@ public partial class Main : Node3D
 	}
 
 	private SignalAwaiter Wait(float seconds) => ToSignal(GetTree().CreateTimer(seconds), SceneTreeTimer.SignalName.Timeout);
+
+	// ---------------------------------------------------------------- Tutorial clips
+
+	private static int Sq(int row, int column) => row * CheckersGame.Size + column;
+
+	/// <summary>Selects a piece the way a player would, shows where it can go, then makes the move.</summary>
+	private async Task ShowMove(Move move, float look = 1.1f)
+	{
+		Select(move.From);
+		await Wait(look);
+		await PlayMove(move);
+	}
+
+	/// <summary>
+	/// Plays one scripted scene for a tutorial video, with the HUD hidden. Recorded with
+	/// addons/renegade_core/tools/Record-Clips.ps1 (`-- --clip=name`).
+	/// </summary>
+	private async Task PlayClip(string clip)
+	{
+		_settings.Mode = GameMode.PlayerVsPlayer;
+		_settings.Muted = false;
+		var dark = new Piece(Colour.Dark, false);
+		var light = new Piece(Colour.Light, false);
+		switch (clip)
+		{
+			case "move":
+				_game.Reset();
+				await RebuildPieces();
+				await Wait(0.8f);
+				await ShowMove(_game.LegalMoves().First(m => m.From == Sq(5, 2)));
+				await Wait(0.5f);
+				await ShowMove(_game.LegalMoves().First(m => m.From == Sq(2, 5)), 0.8f);
+				await Wait(0.5f);
+				await ShowMove(_game.LegalMoves().First(m => m.From == Sq(5, 4)), 0.8f);
+				await Wait(1.2f);
+				break;
+			case "jump":
+				_game.Load(new[] { (Sq(6, 1), dark), (Sq(7, 4), dark), (Sq(5, 2), light), (Sq(3, 4), light), (Sq(0, 7), light), (Sq(1, 2), light) }, Colour.Dark);
+				await RebuildPieces();
+				RefreshHints();
+				await Wait(1.6f);
+				await ShowMove(_game.LegalMoves().OrderByDescending(m => m.Captured.Count).First(), 1.4f);
+				await Wait(2.4f);
+				break;
+			case "king":
+				_game.Load(new[] { (Sq(1, 2), dark), (Sq(6, 5), dark), (Sq(3, 6), light), (Sq(2, 1), light) }, Colour.Dark);
+				await RebuildPieces();
+				await Wait(0.8f);
+				await ShowMove(_game.LegalMoves().First(m => m.From == Sq(1, 2) && m.To == Sq(0, 3)));
+				await Wait(0.6f);
+				await ShowMove(_game.LegalMoves().First(), 0.6f);
+				await Wait(0.6f);
+				// The new king steps backwards.
+				await ShowMove(_game.LegalMoves().First(m => m.From == Sq(0, 3) && m.To / CheckersGame.Size == 1));
+				await Wait(1.4f);
+				break;
+			case "end":
+				_game.Load(new[] { (Sq(5, 2), dark), (Sq(6, 5), dark), (Sq(7, 0), new Piece(Colour.Dark, true)), (Sq(4, 3), light) }, Colour.Dark);
+				await RebuildPieces();
+				await Wait(0.8f);
+				await ShowMove(_game.LegalMoves().First(), 1.0f);
+				await Wait(3.5f);
+				break;
+		}
+		GetTree().Quit();
+	}
 
 	// ---------------------------------------------------------------- Developer flags
 
@@ -561,6 +702,9 @@ public partial class Main : Node3D
 					break;
 				case "--spin":
 					_initialSpin = Mathf.DegToRad(float.Parse(value, System.Globalization.CultureInfo.InvariantCulture));
+					break;
+				case "--clip":
+					_clip = value;
 					break;
 			}
 		}

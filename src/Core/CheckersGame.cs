@@ -63,6 +63,19 @@ public sealed class CheckersGame
 
 	public CheckersGame Clone() => new(this);
 
+	/// <summary>Sets up a position (for tutorial clips and tests).</summary>
+	public void Load(IEnumerable<(int Square, Piece Piece)> pieces, Colour turn)
+	{
+		Array.Clear(_board);
+		foreach (var (square, piece) in pieces)
+			_board[square] = piece;
+		Turn = turn;
+		IsOver = false;
+		Winner = null;
+		QuietMoves = 0;
+		_history.Clear();
+	}
+
 	public void Reset()
 	{
 		Array.Clear(_board);
